@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>互動式電阻電路拼接器</title>
+<style>
+:root{--bg:#f6f8fb;--card:#fff;--ink:#172033;--muted:#64748b;--line:#cbd5e1;--blue:#2563eb;--red:#dc2626;--green:#059669}
+*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,"Segoe UI","Noto Sans TC",sans-serif;background:var(--bg);color:var(--ink)}
+header{padding:18px 22px;background:#0f172a;color:white} header h1{margin:0 0 5px;font-size:22px} header p{margin:0;color:#cbd5e1;font-size:14px}
+.wrap{display:grid;grid-template-columns:300px 1fr;gap:14px;padding:14px;max-width:1500px;margin:auto}
+.panel,.stage{background:var(--card);border:1px solid #e2e8f0;border-radius:14px}
+.panel{padding:14px}.stage{overflow:hidden}
+h2{font-size:16px;margin:4px 0 10px}.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+button,select,input{font:inherit} button{border:1px solid #cbd5e1;background:white;border-radius:9px;padding:9px 11px;cursor:pointer}
+button.primary{background:var(--blue);color:white;border-color:var(--blue)} button.danger{color:var(--red)}
+button.active{outline:3px solid #bfdbfe;border-color:var(--blue)}
+label{font-size:13px;color:var(--muted);display:block;margin-top:8px} input,select{width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:8px;margin-top:4px}
+.help{font-size:13px;line-height:1.55;color:#475569;background:#f8fafc;padding:10px;border-radius:9px}
+.result{margin-top:12px;padding:12px;border-radius:10px;background:#eff6ff;border:1px solid #bfdbfe;line-height:1.65}
+.good{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}
+#canvas{width:100%;height:650px;display:block;background-image:radial-gradient(#dbe2ea 1px,transparent 1px);background-size:20px 20px;touch-action:none}
+.node{cursor:grab}.node circle{fill:white;stroke:#172033;stroke-width:2}.node text{font-size:13px;pointer-events:none}.node.ground circle{fill:#dcfce7;stroke:#059669}.node.a circle{fill:#dbeafe;stroke:#2563eb}.node.b circle{fill:#fee2e2;stroke:#dc2626}
+.comp{cursor:pointer}.comp line{stroke:#334155;stroke-width:2}.comp text{font-size:12px;fill:#172033}.selected line{stroke:#2563eb;stroke-width:4}
+@media(max-width:800px){.wrap{grid-template-columns:1fr}#canvas{height:520px}}
+</style>
+</head>
+<body>
+<header><h1>互動式電阻電路拼接器</h1><p>自由建立 DC 電阻網路，指定 Ground，選任意 A/B 兩節點並計算 V<sub>AB</sub> = V<sub>A</sub> − V<sub>B</sub>。</p></header>
+<div class="wrap">
+<aside class="panel">
+<h2>1. 建立電路</h2>
+<div class="row">
+<button id="addNode">＋節點</button><button id="addR">＋電阻</button><button id="addV">＋電壓源</button>
+</div>
+<div class="help">新增元件：先按「＋電阻」或「＋電壓源」，再依序點兩個節點。節點可直接拖曳。電壓源的第一點是 <b>+</b>、第二點是 <b>−</b>。</div>
+<h2>2. 選取元件 / 修改</h2>
+<div id="editor" class="help">點選電阻或電壓源後，可在這裡修改數值。</div>
+<h2>3. 量測</h2>
+<label>Ground (0 V)<select id="ground"></select></label>
+<label>A 點<select id="pointA"></select></label>
+<label>B 點<select id="pointB"></select></label>
+<div class="row"><button class="primary" id="solve">計算電位</button><button id="example">載入 2.72 範例</button><button class="danger" id="clear">清空</button></div>
+<div id="result" class="result">建立電路後按「計算電位」。</div>
+<div class="help" style="margin-top:10px">求解器使用 Modified Nodal Analysis (MNA)。支援任意線性 DC 電阻網路與理想 DC 電壓源。若電路浮接、短路矛盾或矩陣奇異，會顯示錯誤。</div>
+</aside>
+<section class="stage"><svg id="canvas" viewBox="0 0 1000 650" aria-label="電路工作區"></svg></section>
+</div>
+<script>
+(()=> {
+const svg=document.querySelector('#canvas'), NS='http://www.w3.org/2000/svg';
+let nodes=[], comps=[], mode=null, first=null, selected=null, drag=null, nextN=0, nextC=0;
+const $=s=>document.querySelector(s);
+function node(id,x,y,name){nodes.push({id,x,y,name:name||id})}
+function comp(type,a,b,value){comps.push({id:'C'+nextC++,type,a,b,value})}
+function S(tag,attrs={}){let e=document.createElementNS(NS,tag);for(const[k,v]of Object.entries(attrs))e.setAttribute(k,v);return e}
+function refreshSelects(){
+ const opts=nodes.map(n=>`<option value="${n.id}">${n.name}</option>`).join('');
+ for(const id of ['ground','pointA','pointB']){let el=$('#'+id),old=el.value;el.innerHTML=opts;if(nodes.some(n=>n.id===old))el.value=old}
+}
+function draw(){
+ svg.innerHTML='';
+ comps.forEach(c=>{
+  const a=nodes.find(n=>n.id===c.a),b=nodes.find(n=>n.id===c.b);if(!a||!b)return;
+  let g=S('g',{class:'comp '+(selected===c.id?'selected':''),'data-id':c.id});
+  let line=S('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y});g.append(line);
+  let mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+  if(c.type==='R'){
+    let r=S('rect',{x:mx-27,y:my-11,width:54,height:22,rx:4,fill:'#fff',stroke:'#334155','stroke-width':2,transform:`rotate(${Math.atan2(b.y-a.y,b.x-a.x)*180/Math.PI} ${mx} ${my})`});g.append(r);
+    let t=S('text',{x:mx,y:my-17,'text-anchor':'middle'});t.textContent=c.value+' Ω';g.append(t);
+  }else{
+    let cir=S('circle',{cx:mx,cy:my,r:20,fill:'#fff',stroke:'#dc2626','stroke-width':2});g.append(cir);
+    let t=S('text',{x:mx,y:my+4,'text-anchor':'middle'});t.textContent=c.value+' V';g.append(t);
+    let p=S('text',{x:mx-28,y:my-18});p.textContent='+';g.append(p);let m=S('text',{x:mx+22,y:my+27});m.textContent='−';g.append(m);
+  }
+  g.addEventListener('click',e=>{e.stopPropagation();selected=c.id;mode=null;first=null;edit();draw()});svg.append(g);
+ });
+ const G=$('#ground').value,A=$('#pointA').value,B=$('#pointB').value;
+ nodes.forEach(n=>{
+  let cls='node'+(n.id===G?' ground':'')+(n.id===A?' a':'')+(n.id===B?' b':'');
+  let g=S('g',{class:cls,'data-node':n.id});g.append(S('circle',{cx:n.x,cy:n.y,r:11}));
+  let t=S('text',{x:n.x+15,y:n.y-12});t.textContent=n.name;g.append(t);
+  g.addEventListener('pointerdown',e=>{if(mode)return;drag={id:n.id,dx:n.x-e.offsetX,dy:n.y-e.offsetY};g.setPointerCapture(e.pointerId)});
+  g.addEventListener('pointermove',e=>{if(drag&&drag.id===n.id){n.x=Math.max(15,Math.min(985,e.offsetX+drag.dx));n.y=Math.max(15,Math.min(635,e.offsetY+drag.dy));draw()}});
+  g.addEventListener('pointerup',()=>drag=null);
+  g.addEventListener('click',e=>{e.stopPropagation(); if(mode==='R'||mode==='V'){if(!first){first=n.id}else if(first!==n.id){comp(mode,first,n.id,mode==='R'?1000:5);first=null;mode=null;setButtons();draw();edit()}}});
+  svg.append(g);
+ });
+}
+function setButtons(){['addR','addV'].forEach(id=>$('#'+id).classList.remove('active'));if(mode==='R')$('#addR').classList.add('active');if(mode==='V')$('#addV').classList.add('active')}
+function edit(){
+ let c=comps.find(x=>x.id===selected);
+ if(!c){$('#editor').innerHTML='點選電阻或電壓源後，可在這裡修改數值。';return}
+ $('#editor').innerHTML=`<b>${c.type==='R'?'電阻':'DC 電壓源'} ${c.id}</b><label>${c.type==='R'?'阻值 (Ω)':'電壓 (V)'}<input id="valEdit" type="number" step="any" value="${c.value}"></label><div class="row"><button id="apply">套用</button><button id="deleteC" class="danger">刪除元件</button></div>`;
+ $('#apply').onclick=()=>{let v=Number($('#valEdit').value);if(!Number.isFinite(v)||(c.type==='R'&&v<=0)){alert('請輸入有效數值；電阻必須 > 0。');return}c.value=v;draw()};
+ $('#deleteC').onclick=()=>{comps=comps.filter(x=>x.id!==c.id);selected=null;edit();draw()};
+}
+$('#addNode').onclick=()=>{let i=nodes.length;node('N'+nextN++,140+(i%5)*150,100+Math.floor(i/5)*100);refreshSelects();draw()};
+$('#addR').onclick=()=>{mode='R';first=null;setButtons()};
+$('#addV').onclick=()=>{mode='V';first=null;setButtons()};
+['ground','pointA','pointB'].forEach(id=>$('#'+id).addEventListener('change',draw));
+function gaussian(A,b){
+ let n=A.length;
+ for(let i=0;i<n;i++){let p=i;for(let r=i+1;r<n;r++)if(Math.abs(A[r][i])>Math.abs(A[p][i]))p=r;
+  if(Math.abs(A[p][i])<1e-12)throw Error('矩陣奇異：可能有浮接節點、未接 Ground 的子電路，或理想電壓源造成矛盾。');
+  [A[i],A[p]]=[A[p],A[i]];[b[i],b[p]]=[b[p],b[i]];
+  let q=A[i][i];for(let j=i;j<n;j++)A[i][j]/=q;b[i]/=q;
+  for(let r=0;r<n;r++)if(r!==i){let f=A[r][i];for(let j=i;j<n;j++)A[r][j]-=f*A[i][j];b[r]-=f*b[i]}
+ } return b;
+}
+function solve(){
+ try{
+  if(nodes.length<2)throw Error('至少需要兩個節點。');
+  const g=$('#ground').value;if(!g)throw Error('請指定 Ground。');
+  const non=nodes.filter(n=>n.id!==g), idx=new Map(non.map((n,i)=>[n.id,i]));
+  const vs=comps.filter(c=>c.type==='V'), N=non.length+vs.length;
+  let M=Array.from({length:N},()=>Array(N).fill(0)), z=Array(N).fill(0);
+  comps.filter(c=>c.type==='R').forEach(c=>{let y=1/c.value,ia=idx.get(c.a),ib=idx.get(c.b);
+   if(ia!==undefined)M[ia][ia]+=y;if(ib!==undefined)M[ib][ib]+=y;
+   if(ia!==undefined&&ib!==undefined){M[ia][ib]-=y;M[ib][ia]-=y}
+  });
+  vs.forEach((c,k)=>{let q=non.length+k,ia=idx.get(c.a),ib=idx.get(c.b);
+   if(ia!==undefined){M[ia][q]+=1;M[q][ia]+=1} if(ib!==undefined){M[ib][q]-=1;M[q][ib]-=1} z[q]=c.value;
+  });
+  if(N===0)throw Error('沒有可求解的未知數。');
+  let x=gaussian(M.map(r=>r.slice()),z.slice()), volts={};nodes.forEach(n=>volts[n.id]=n.id===g?0:x[idx.get(n.id)]);
+  let A=$('#pointA').value,B=$('#pointB').value,va=volts[A],vb=volts[B],vab=va-vb;
+  $('#result').innerHTML=`<span class="good">求解成功</span><br>V<sub>A</sub> = <b>${fmt(va)} V</b><br>V<sub>B</sub> = <b>${fmt(vb)} V</b><br>V<sub>AB</sub> = V<sub>A</sub> − V<sub>B</sub> = <b>${fmt(vab)} V</b><hr style="border:0;border-top:1px solid #bfdbfe">${nodes.map(n=>`${n.name}: ${fmt(volts[n.id])} V`).join('<br>')}`;
+ }catch(e){$('#result').innerHTML=`<span class="bad">無法求解</span><br>${e.message}`}
+}
+function fmt(v){if(Math.abs(v)<1e-10)v=0;return Number(v.toPrecision(7)).toString()}
+$('#solve').onclick=solve;
+function loadExample(){
+ nodes=[];comps=[];nextN=0;nextC=0;
+ node('N'+nextN++,110,325,'Vs+');node('N'+nextN++,300,325,'Vo');node('N'+nextN++,500,200,'上中點');node('N'+nextN++,500,450,'下中點');node('N'+nextN++,760,325,'GND');
+ comp('V','N0','N4',10);comp('R','N0','N1',1);comp('R','N1','N2',1);comp('R','N2','N4',1);comp('R','N1','N3',1);comp('R','N3','N4',1);comp('R','N2','N3',2);
+ refreshSelects();$('#ground').value='N4';$('#pointA').value='N1';$('#pointB').value='N4';selected=null;edit();draw();solve();
+}
+$('#example').onclick=loadExample;
+$('#clear').onclick=()=>{nodes=[];comps=[];nextN=nextC=0;selected=null;refreshSelects();edit();draw();$('#result').textContent='工作區已清空。'};
+loadExample();
+})();
+</script>
+</body></html>
